@@ -1,56 +1,59 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
-import 'dart:convert'; // Für Text-Decoding
+import 'dart:convert';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:epub_view/epub_view.dart' as epub_parser;
 import 'package:html/parser.dart' as html_parser;
-import 'package:syncfusion_flutter_pdf/pdf.dart'; // PDF Support
+import 'package:syncfusion_flutter_pdf/pdf.dart';
 import 'package:archive/archive.dart';
+import 'package:dynamic_color/dynamic_color.dart';
 import 'models/book_metadata.dart';
 import 'services/storage_service.dart';
 import 'services/book_service.dart';
+import 'services/theme_service.dart';
 import 'widgets/book_list_drawer.dart';
 import 'widgets/page_preview_panel.dart';
 import 'widgets/ebook_reader_view.dart';
+import 'widgets/settings_page.dart';
 
-void main() {
-  runApp(const RSVPApp());
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  final themeService = ThemeService();
+  await themeService.loadSettings();
+  runApp(RSVPApp(themeService: themeService));
 }
 
 class RSVPApp extends StatelessWidget {
-  const RSVPApp({super.key});
+  final ThemeService themeService;
+
+  const RSVPApp({super.key, required this.themeService});
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Flutter RSVP Pro',
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData.dark().copyWith(
-        scaffoldBackgroundColor: const Color(0xFF1E1E1E),
-        colorScheme: const ColorScheme.dark(
-          primary: Color(0xFF007ACC),
-          secondary: Color(0xFFFF4444),
-          surface: Color(0xFF252526),
-        ),
-        switchTheme: SwitchThemeData(
-          thumbColor: MaterialStateProperty.resolveWith((states) {
-            if (states.contains(MaterialState.selected)) {
-              return const Color(0xFF007ACC);
-            }
-            return Colors.grey;
-          }),
-          trackColor: MaterialStateProperty.resolveWith((states) {
-            if (states.contains(MaterialState.selected)) {
-              return const Color(0xFF007ACC).withOpacity(0.5);
-            }
-            return Colors.grey.withOpacity(0.3);
-          }),
-        ),
-      ),
-      home: const RSVPReaderScreen(),
+    return DynamicColorBuilder(
+      builder: (ColorScheme? lightDynamic, ColorScheme? darkDynamic) {
+        // Update theme service with dynamic colors
+        if (lightDynamic != null) {
+          themeService.setDynamicPrimaryColor(lightDynamic.primary);
+        }
+
+        return ListenableBuilder(
+          listenable: themeService,
+          builder: (context, _) {
+            return MaterialApp(
+              title: 'Speed Reader',
+              debugShowCheckedModeBanner: false,
+              theme: themeService.getLightTheme(lightDynamic),
+              darkTheme: themeService.getDarkTheme(darkDynamic),
+              themeMode: themeService.flutterThemeMode,
+              home: RSVPReaderScreen(themeService: themeService),
+            );
+          },
+        );
+      },
     );
   }
 }
@@ -59,14 +62,16 @@ class RSVPApp extends StatelessWidget {
 enum LayoutMode { rsvpOnly, splitView, ebookOnly }
 
 class RSVPReaderScreen extends StatefulWidget {
-  const RSVPReaderScreen({super.key});
+  final ThemeService themeService;
+
+  const RSVPReaderScreen({super.key, required this.themeService});
 
   @override
   State<RSVPReaderScreen> createState() => _RSVPReaderScreenState();
 }
 
 class _RSVPReaderScreenState extends State<RSVPReaderScreen> {
-  // --- Zustand ---
+  // --- State ---
   List<String> _words = [];
   int _currentIndex = 0;
   bool _isPlaying = false;
@@ -74,51 +79,44 @@ class _RSVPReaderScreenState extends State<RSVPReaderScreen> {
   Timer? _timer;
   bool _isLoading = false;
   String? _bookTitle;
-  String? _currentBookId; // ID des aktuell geladenen Buches
-  Uint8List? _currentBookBytes; // Bytes des aktuellen Buches (für EPUB Reader)
+  String? _currentBookId;
+  Uint8List? _currentBookBytes;
 
-  // Layout-Modi
+  // Layout modes
   LayoutMode _layoutMode = LayoutMode.rsvpOnly;
 
-  // Neue Einstellung
-  bool _longWordDelay = true; // Standardmäßig an
+  // Settings
+  bool _longWordDelay = true;
 
   final RegExp _whitespaceRegex = RegExp(r'\s+');
   final StorageService _storageService = StorageService();
-  int _lastSavedIndex = 0; // Letzter gespeicherter Index für Debouncing
+  int _lastSavedIndex = 0;
 
   @override
   void dispose() {
     _timer?.cancel();
-    // Speichere Fortschritt beim Schließen
     _saveProgress();
     super.dispose();
   }
 
-  // Fortschritt speichern (mit Debouncing)
   Future<void> _saveProgress() async {
     if (_currentBookId != null && _currentIndex != _lastSavedIndex) {
       try {
         await _storageService.updateProgress(_currentBookId!, _currentIndex);
         _lastSavedIndex = _currentIndex;
       } catch (e) {
-        // Ignore save errors silently
+        // Ignore save errors
       }
     }
   }
 
-  // --- Logik: Datei laden & Parsen ---
   Future<void> _pickAndLoadFile() async {
     setState(() => _isLoading = true);
 
     try {
       FilePickerResult? result = await FilePicker.platform.pickFiles(
         type: FileType.custom,
-        allowedExtensions: [
-          'epub',
-          'pdf',
-          'txt',
-        ], // .mobi ist komplex in Dart pur
+        allowedExtensions: ['epub', 'pdf', 'txt'],
       );
 
       if (result != null) {
@@ -126,16 +124,12 @@ class _RSVPReaderScreenState extends State<RSVPReaderScreen> {
         String title = result.files.single.name;
         Uint8List? bytes = result.files.single.bytes;
 
-        // Fix: EPUB files are ZIP archives, so on web they may be detected as "zip"
-        // Check filename extension as fallback - handle both .epub and .epub.zip cases
         final titleLower = title.toLowerCase();
         if (extension == 'zip' &&
             (titleLower.endsWith('.epub') || titleLower.contains('.epub'))) {
           extension = 'epub';
         }
 
-        // On platforms where .bytes is null (like mobile/desktop), fallback to reading the file from path
-        // CRITICAL: On web, accessing .path throws an exception, so we must check kIsWeb first
         if (bytes == null && !kIsWeb) {
           try {
             final path = result.files.single.path;
@@ -148,15 +142,12 @@ class _RSVPReaderScreenState extends State<RSVPReaderScreen> {
         }
 
         if (bytes == null) {
-          throw Exception(
-            "Konnte die Datei nicht laden (keine Bytes verfügbar)",
-          );
+          throw Exception("Konnte die Datei nicht laden");
         }
 
         String extractedText = "";
         String? author;
 
-        // Unterscheidung nach Dateityp
         if (extension == 'epub') {
           try {
             var parsed = await _parseEpub(bytes);
@@ -164,11 +155,9 @@ class _RSVPReaderScreenState extends State<RSVPReaderScreen> {
             title = parsed.title ?? title;
             author = parsed.author;
           } catch (e) {
-            // epub_view failed - try manual EPUB extraction using archive library
             if (e.toString().contains('META-INF/container.xml') ||
                 e.toString().contains('not found in archive')) {
               try {
-                // Manually extract text from EPUB using archive library
                 var parsed = await _parseEpubManually(bytes);
                 extractedText = parsed.text;
                 title = parsed.title ?? title;
@@ -186,7 +175,6 @@ class _RSVPReaderScreenState extends State<RSVPReaderScreen> {
           extractedText = utf8.decode(bytes);
         }
 
-        // Text bereinigen und splitten
         List<String> words = extractedText
             .split(_whitespaceRegex)
             .where((w) => w.isNotEmpty)
@@ -194,11 +182,9 @@ class _RSVPReaderScreenState extends State<RSVPReaderScreen> {
 
         if (words.isEmpty) throw Exception("Kein Text gefunden");
 
-        // Generiere eindeutige Book-ID
         final bookId =
             '${DateTime.now().millisecondsSinceEpoch}_${title.hashCode}';
 
-        // Erstelle Metadata
         final metadata = BookMetadata(
           id: bookId,
           title: title,
@@ -210,7 +196,6 @@ class _RSVPReaderScreenState extends State<RSVPReaderScreen> {
           fileType: extension,
         );
 
-        // Extrahiere Cover-Bild
         Uint8List? coverImage;
         if (extension == 'epub') {
           coverImage = await BookService.extractCoverFromEpub(bytes);
@@ -218,7 +203,6 @@ class _RSVPReaderScreenState extends State<RSVPReaderScreen> {
           coverImage = await BookService.extractCoverFromPdf(bytes);
         }
 
-        // Speichere Buch (nur wenn nicht Web, da Web keine lokale Dateispeicherung hat)
         if (!kIsWeb) {
           try {
             await _storageService.saveBook(
@@ -229,7 +213,7 @@ class _RSVPReaderScreenState extends State<RSVPReaderScreen> {
               coverImage: coverImage,
             );
           } catch (e) {
-            // Ignore save errors, continue loading
+            // Ignore save errors
           }
         }
 
@@ -245,16 +229,15 @@ class _RSVPReaderScreenState extends State<RSVPReaderScreen> {
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Fehler: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Fehler: $e')),
+        );
       }
     } finally {
       setState(() => _isLoading = false);
     }
   }
 
-  // Manual EPUB parser using archive library (fallback for web)
   Future<({String text, String? title, String? author})> _parseEpubManually(
     Uint8List bytes,
   ) async {
@@ -263,7 +246,6 @@ class _RSVPReaderScreenState extends State<RSVPReaderScreen> {
     String? title;
     String? author;
 
-    // Find and parse content.opf for metadata
     ArchiveFile? opfFile;
     for (var file in archive.files) {
       if (file.name.toLowerCase().endsWith('content.opf')) {
@@ -274,7 +256,6 @@ class _RSVPReaderScreenState extends State<RSVPReaderScreen> {
 
     if (opfFile != null && opfFile.content != null) {
       final opfContent = utf8.decode(opfFile.content as List<int>);
-      // Extract title from OPF
       final titleMatch = RegExp(
         r'<dc:title[^>]*>([^<]+)</dc:title>',
         caseSensitive: false,
@@ -282,7 +263,6 @@ class _RSVPReaderScreenState extends State<RSVPReaderScreen> {
       if (titleMatch != null) {
         title = titleMatch.group(1);
       }
-      // Extract author from OPF
       final authorMatch = RegExp(
         r'<dc:creator[^>]*>([^<]+)</dc:creator>',
         caseSensitive: false,
@@ -292,7 +272,6 @@ class _RSVPReaderScreenState extends State<RSVPReaderScreen> {
       }
     }
 
-    // Extract text from HTML/XHTML files in OEBPS or similar folders
     for (var file in archive.files) {
       final name = file.name.toLowerCase();
       if ((name.endsWith('.html') ||
@@ -308,7 +287,7 @@ class _RSVPReaderScreenState extends State<RSVPReaderScreen> {
             buffer.write(" ");
           }
         } catch (e) {
-          // Skip files that can't be parsed
+          // Skip unparsable files
         }
       }
     }
@@ -316,7 +295,6 @@ class _RSVPReaderScreenState extends State<RSVPReaderScreen> {
     return (text: buffer.toString(), title: title, author: author);
   }
 
-  // Parser für EPUB
   Future<({String text, String? title, String? author})> _parseEpub(
     Uint8List bytes,
   ) async {
@@ -347,7 +325,6 @@ class _RSVPReaderScreenState extends State<RSVPReaderScreen> {
     }
   }
 
-  // Parser für PDF
   Future<String> _parsePdf(Uint8List bytes) async {
     try {
       final PdfDocument document = PdfDocument(inputBytes: bytes);
@@ -355,11 +332,9 @@ class _RSVPReaderScreenState extends State<RSVPReaderScreen> {
       document.dispose();
       return text;
     } catch (e) {
-      return "Fehler beim Lesen der PDF. Ist sie verschlüsselt?";
+      return "Fehler beim Lesen der PDF.";
     }
   }
-
-  // --- Logik: RSVP & Timer ---
 
   void _togglePlay() {
     if (_words.isEmpty) return;
@@ -374,7 +349,6 @@ class _RSVPReaderScreenState extends State<RSVPReaderScreen> {
   void _pause() {
     _timer?.cancel();
     setState(() => _isPlaying = false);
-    // Speichere Fortschritt bei Pause
     _saveProgress();
   }
 
@@ -384,12 +358,8 @@ class _RSVPReaderScreenState extends State<RSVPReaderScreen> {
     _saveProgress();
   }
 
-  // Lade gespeichertes Buch
   Future<void> _loadBook(String bookId) async {
-    if (kIsWeb) {
-      // Web unterstützt keine lokale Dateispeicherung
-      return;
-    }
+    if (kIsWeb) return;
 
     setState(() => _isLoading = true);
 
@@ -401,7 +371,6 @@ class _RSVPReaderScreenState extends State<RSVPReaderScreen> {
       String title = metadata.title;
       String? author = metadata.author;
 
-      // Parse based on file type
       if (metadata.fileType == 'epub') {
         try {
           var parsed = await _parseEpub(bytes);
@@ -429,7 +398,6 @@ class _RSVPReaderScreenState extends State<RSVPReaderScreen> {
         extractedText = utf8.decode(bytes);
       }
 
-      // Text bereinigen und splitten
       List<String> words = extractedText
           .split(_whitespaceRegex)
           .where((w) => w.isNotEmpty)
@@ -437,7 +405,6 @@ class _RSVPReaderScreenState extends State<RSVPReaderScreen> {
 
       if (words.isEmpty) throw Exception("Kein Text gefunden");
 
-      // Lade gespeicherten Fortschritt
       final savedIndex = metadata.lastReadIndex;
       final startIndex = savedIndex < words.length ? savedIndex : 0;
 
@@ -452,9 +419,9 @@ class _RSVPReaderScreenState extends State<RSVPReaderScreen> {
       });
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Fehler beim Laden: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Fehler beim Laden: $e')),
+        );
       }
     } finally {
       setState(() => _isLoading = false);
@@ -472,11 +439,9 @@ class _RSVPReaderScreenState extends State<RSVPReaderScreen> {
 
     String currentWord = _words[_currentIndex];
 
-    // 1. Basis-Intervall
     int baseDelay = (60000 / _wpm).round();
     double multiplier = 1.0;
 
-    // 2. Satzzeichen-Verzögerung
     if (currentWord.endsWith('.') ||
         currentWord.endsWith('!') ||
         currentWord.endsWith('?') ||
@@ -486,11 +451,7 @@ class _RSVPReaderScreenState extends State<RSVPReaderScreen> {
       multiplier = 1.5;
     }
 
-    // 3. NEU: Lange Worte verzögern
-    // Wir definieren "lang" als > 10 Zeichen (anpassbar)
     if (_longWordDelay && currentWord.length > 9) {
-      // Wenn wir schon eine Pause haben (Satzzeichen), verlängern wir nicht nochmal drastisch
-      // Sonst addieren wir Zeit hinzu.
       multiplier = multiplier == 1.0 ? 1.5 : multiplier * 1.2;
     } else if (currentWord.length < 3) {
       multiplier *= 0.8;
@@ -503,7 +464,6 @@ class _RSVPReaderScreenState extends State<RSVPReaderScreen> {
         setState(() {
           _currentIndex++;
         });
-        // Speichere Fortschritt alle 10 Wörter
         if (_currentIndex % 10 == 0) {
           _saveProgress();
         }
@@ -512,37 +472,75 @@ class _RSVPReaderScreenState extends State<RSVPReaderScreen> {
     });
   }
 
-  // --- Logik: ORP (Optimal Recognition Point) ---
-  // The ORP should be around 30-35% into the word for optimal reading
   int _getOrpIndex(String word) {
     int len = word.length;
     if (len <= 1) return 0;
     if (len <= 3) return 1;
-    // For longer words, position at roughly 30-35% into the word
     return (len * 0.33).round().clamp(1, len - 1);
   }
 
-  // --- UI ---
+  void _openSettings() {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (context) => SettingsPage(themeService: widget.themeService),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+
     return Scaffold(
       appBar: AppBar(
         title: Text(_bookTitle ?? "Speed Reader"),
-        backgroundColor: Theme.of(context).colorScheme.surface,
         leading: Builder(
           builder: (scaffoldContext) => IconButton(
             icon: const Icon(Icons.menu),
+            tooltip: 'Bibliothek',
             onPressed: () => Scaffold.of(scaffoldContext).openDrawer(),
           ),
         ),
         actions: [
+          // Settings button
           IconButton(
-            icon: const Icon(Icons.folder_open),
-            onPressed: _pickAndLoadFile,
+            icon: const Icon(Icons.settings_outlined),
+            tooltip: 'Einstellungen',
+            onPressed: _openSettings,
           ),
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: _words.isNotEmpty ? _reset : null,
+          // Overflow menu
+          PopupMenuButton<String>(
+            icon: const Icon(Icons.more_vert),
+            tooltip: 'Mehr',
+            onSelected: (value) {
+              switch (value) {
+                case 'open_file':
+                  _pickAndLoadFile();
+                  break;
+                case 'reset':
+                  if (_words.isNotEmpty) _reset();
+                  break;
+              }
+            },
+            itemBuilder: (context) => [
+              PopupMenuItem<String>(
+                value: 'open_file',
+                child: ListTile(
+                  leading: Icon(Icons.folder_open, color: colorScheme.primary),
+                  title: const Text('Datei öffnen'),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
+              if (_words.isNotEmpty)
+                PopupMenuItem<String>(
+                  value: 'reset',
+                  child: ListTile(
+                    leading: Icon(Icons.refresh, color: colorScheme.primary),
+                    title: const Text('Zurücksetzen'),
+                    contentPadding: EdgeInsets.zero,
+                  ),
+                ),
+            ],
           ),
         ],
       ),
@@ -555,7 +553,9 @@ class _RSVPReaderScreenState extends State<RSVPReaderScreen> {
   }
 
   Widget _buildBody() {
-    // Ebook Reader Only Mode - show when user selects Reader mode and has EPUB
+    final colorScheme = Theme.of(context).colorScheme;
+
+    // Ebook Reader Only Mode
     if (_currentBookBytes != null && _layoutMode == LayoutMode.ebookOnly) {
       return EbookReaderView(
         epubBytes: _currentBookBytes!,
@@ -567,21 +567,19 @@ class _RSVPReaderScreenState extends State<RSVPReaderScreen> {
       );
     }
 
-    // RSVP Only oder Split View
+    // RSVP Only or Split View
     return LayoutBuilder(
       builder: (context, constraints) {
-        // Calculate preview panel width based on available space
         final screenWidth = constraints.maxWidth;
         final previewWidth = screenWidth < 500
-            ? screenWidth *
-                  0.35 // 35% on small screens
+            ? screenWidth * 0.35
             : screenWidth < 800
-            ? 180.0 // Fixed 180px on medium screens
-            : 220.0; // Fixed 220px on large screens
+                ? 180.0
+                : 220.0;
 
         return Row(
           children: [
-            // Seitenvorschau (nur wenn Split View und EPUB/PDF)
+            // Page preview (Split View)
             if (_layoutMode == LayoutMode.splitView &&
                 (_currentBookBytes != null || _words.isNotEmpty))
               SizedBox(
@@ -597,11 +595,11 @@ class _RSVPReaderScreenState extends State<RSVPReaderScreen> {
                   width: previewWidth,
                 ),
               ),
-            // RSVP Reader Bereich
+            // RSVP Reader area
             Expanded(
               child: Column(
                 children: [
-                  // Lesebereich
+                  // Reading area
                   Expanded(
                     flex: 4,
                     child: Container(
@@ -615,17 +613,20 @@ class _RSVPReaderScreenState extends State<RSVPReaderScreen> {
                     ),
                   ),
 
-                  // Fortschritt
+                  // Progress
                   if (_words.isNotEmpty) ...[
                     Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 24),
                       child: Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          Text("0", style: TextStyle(color: Colors.grey[600])),
+                          Text(
+                            "0",
+                            style: TextStyle(color: colorScheme.outline),
+                          ),
                           Text(
                             "${_words.length}",
-                            style: TextStyle(color: Colors.grey[600]),
+                            style: TextStyle(color: colorScheme.outline),
                           ),
                         ],
                       ),
@@ -643,24 +644,24 @@ class _RSVPReaderScreenState extends State<RSVPReaderScreen> {
                       _words.isEmpty
                           ? ""
                           : "${(_currentIndex / _words.length * 100).toStringAsFixed(1)} %",
-                      style: const TextStyle(color: Colors.grey),
+                      style: TextStyle(color: colorScheme.outline),
                     ),
                   ],
 
                   const SizedBox(height: 10),
 
-                  // Kontrollbereich
+                  // Controls panel
                   Container(
                     padding: const EdgeInsets.all(24),
                     decoration: BoxDecoration(
-                      color: Theme.of(context).colorScheme.surface,
+                      color: colorScheme.surfaceContainerHigh,
                       borderRadius: const BorderRadius.vertical(
-                        top: Radius.circular(20),
+                        top: Radius.circular(28),
                       ),
                     ),
                     child: Column(
                       children: [
-                        // Layout-Modus Buttons
+                        // Layout mode buttons
                         if (_words.isNotEmpty) ...[
                           Wrap(
                             alignment: WrapAlignment.center,
@@ -677,7 +678,6 @@ class _RSVPReaderScreenState extends State<RSVPReaderScreen> {
                                 label: 'Vorschau',
                                 mode: LayoutMode.splitView,
                               ),
-                              // E-Book mode only for EPUBs
                               if (_currentBookBytes != null)
                                 _buildLayoutModeButton(
                                   icon: Icons.menu_book,
@@ -688,24 +688,27 @@ class _RSVPReaderScreenState extends State<RSVPReaderScreen> {
                           ),
                           const SizedBox(height: 16),
                         ],
-                        // Einstellungen: WPM & Long Words
+                        // Settings: WPM & Long Words
                         Row(
                           children: [
                             Expanded(
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  const Text(
+                                  Text(
                                     "Geschwindigkeit",
-                                    style: TextStyle(color: Colors.grey),
+                                    style: TextStyle(
+                                      color: colorScheme.onSurfaceVariant,
+                                    ),
                                   ),
                                   Row(
                                     children: [
                                       Text(
                                         "${_wpm.round()}",
-                                        style: const TextStyle(
+                                        style: TextStyle(
                                           fontWeight: FontWeight.bold,
                                           fontSize: 18,
+                                          color: colorScheme.primary,
                                         ),
                                       ),
                                       Expanded(
@@ -725,11 +728,11 @@ class _RSVPReaderScreenState extends State<RSVPReaderScreen> {
                             const SizedBox(width: 16),
                             Column(
                               children: [
-                                const Text(
-                                  "Länger stoppen bei langen Worten",
+                                Text(
+                                  "Lange Wörter",
                                   style: TextStyle(
                                     fontSize: 10,
-                                    color: Colors.grey,
+                                    color: colorScheme.onSurfaceVariant,
                                   ),
                                 ),
                                 Switch(
@@ -748,19 +751,10 @@ class _RSVPReaderScreenState extends State<RSVPReaderScreen> {
                         SizedBox(
                           width: double.infinity,
                           height: 55,
-                          child: ElevatedButton(
+                          child: FilledButton.icon(
                             onPressed: _words.isNotEmpty ? _togglePlay : null,
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: Theme.of(
-                                context,
-                              ).colorScheme.primary,
-                              foregroundColor: Colors.white,
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                              elevation: _isPlaying ? 0 : 4,
-                            ),
-                            child: Text(
+                            icon: Icon(_isPlaying ? Icons.pause : Icons.play_arrow),
+                            label: Text(
                               _isPlaying ? "Pausieren" : "Starten",
                               style: const TextStyle(
                                 fontSize: 18,
@@ -783,14 +777,54 @@ class _RSVPReaderScreenState extends State<RSVPReaderScreen> {
   }
 
   Widget _buildWordDisplay() {
+    final colorScheme = Theme.of(context).colorScheme;
+
     if (_words.isEmpty) {
-      return const Text(
-        "PDF / EPUB / TXT öffnen",
-        style: TextStyle(fontSize: 20, color: Colors.grey),
+      return Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(
+            Icons.menu_book_outlined,
+            size: 64,
+            color: colorScheme.outline,
+          ),
+          const SizedBox(height: 16),
+          Text(
+            "PDF / EPUB / TXT öffnen",
+            style: TextStyle(
+              fontSize: 18,
+              color: colorScheme.onSurfaceVariant,
+            ),
+          ),
+          const SizedBox(height: 8),
+          FilledButton.tonalIcon(
+            onPressed: _pickAndLoadFile,
+            icon: const Icon(Icons.folder_open),
+            label: const Text('Datei auswählen'),
+          ),
+        ],
       );
     }
     if (_currentIndex >= _words.length) {
-      return const Text("Fertig!", style: TextStyle(fontSize: 40));
+      return Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(
+            Icons.check_circle_outline,
+            size: 64,
+            color: colorScheme.primary,
+          ),
+          const SizedBox(height: 16),
+          Text(
+            "Fertig!",
+            style: TextStyle(
+              fontSize: 32,
+              fontWeight: FontWeight.bold,
+              color: colorScheme.primary,
+            ),
+          ),
+        ],
+      );
     }
 
     String word = _words[_currentIndex];
@@ -802,15 +836,13 @@ class _RSVPReaderScreenState extends State<RSVPReaderScreen> {
 
     return LayoutBuilder(
       builder: (context, constraints) {
-        final availableWidth = constraints.maxWidth - 40; // padding
+        final availableWidth = constraints.maxWidth - 40;
 
-        // Start with base font size based on screen width
         final screenWidth = MediaQuery.of(this.context).size.width;
         double baseFontSize = screenWidth < 400
             ? 28.0
             : (screenWidth < 600 ? 36.0 : 52.0);
 
-        // Calculate required width and scale down if needed
         double fontSize = baseFontSize;
         double totalWidth;
 
@@ -837,18 +869,17 @@ class _RSVPReaderScreenState extends State<RSVPReaderScreen> {
         final textStyle = TextStyle(
           fontFamily: 'Courier New',
           fontSize: fontSize,
-          color: Colors.white,
+          color: colorScheme.onSurface,
           fontWeight: FontWeight.bold,
         );
 
         final redStyle = TextStyle(
           fontFamily: 'Courier New',
           fontSize: fontSize,
-          color: Theme.of(this.context).colorScheme.secondary,
+          color: colorScheme.primary,
           fontWeight: FontWeight.bold,
         );
 
-        // Measure exact widths
         final part1Painter = TextPainter(
           text: TextSpan(text: part1, style: textStyle),
           textDirection: TextDirection.ltr,
@@ -864,32 +895,26 @@ class _RSVPReaderScreenState extends State<RSVPReaderScreen> {
         final part1Width = part1Painter.width;
         final focusCharWidth = focusCharPainter.width;
 
-        // Center the red letter
         final centerX = constraints.maxWidth / 2;
         final focusCharLeft = centerX - focusCharWidth / 2;
         final part1Left = focusCharLeft - part1Width;
         final part2Left = focusCharLeft + focusCharWidth;
-
-        // Vertical centering
         final centerY = constraints.maxHeight / 2 - fontSize / 2;
 
         return Stack(
           clipBehavior: Clip.none,
           children: [
-            // part1 - left of red letter
             if (part1.isNotEmpty)
               Positioned(
                 left: part1Left,
                 top: centerY,
                 child: Text(part1, style: textStyle),
               ),
-            // Red letter - centered
             Positioned(
               left: focusCharLeft,
               top: centerY,
               child: Text(focusChar, style: redStyle),
             ),
-            // part2 - right of red letter
             if (part2.isNotEmpty)
               Positioned(
                 left: part2Left,
@@ -907,26 +932,28 @@ class _RSVPReaderScreenState extends State<RSVPReaderScreen> {
     required String label,
     required LayoutMode mode,
   }) {
+    final colorScheme = Theme.of(context).colorScheme;
     final isSelected = _layoutMode == mode;
-    return OutlinedButton.icon(
+
+    return FilledButton.tonal(
       onPressed: () {
         setState(() => _layoutMode = mode);
       },
-      icon: Icon(icon, size: 18),
-      label: Text(label),
-      style: OutlinedButton.styleFrom(
-        foregroundColor: isSelected
-            ? Theme.of(context).colorScheme.primary
-            : Colors.grey,
-        side: BorderSide(
-          color: isSelected
-              ? Theme.of(context).colorScheme.primary
-              : Colors.grey[700]!,
-          width: isSelected ? 2 : 1,
-        ),
+      style: FilledButton.styleFrom(
         backgroundColor: isSelected
-            ? Theme.of(context).colorScheme.primary.withOpacity(0.1)
-            : Colors.transparent,
+            ? colorScheme.primaryContainer
+            : colorScheme.surfaceContainerHighest,
+        foregroundColor: isSelected
+            ? colorScheme.onPrimaryContainer
+            : colorScheme.onSurfaceVariant,
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 18),
+          const SizedBox(width: 6),
+          Text(label),
+        ],
       ),
     );
   }
