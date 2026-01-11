@@ -39,6 +39,11 @@ jobs:
 
       - name: Run tests
         run: flutter doctor
+        
+      - name: Decode keystore
+        run: |
+          mkdir -p android/app
+          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 --decode > android/app/release.keystore
 
       - name: Build Android APK
         run: flutter build apk --release
