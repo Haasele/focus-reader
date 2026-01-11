@@ -24,8 +24,8 @@ jobs:
       - name: Extract version
         id: version
         run: |
-          VERSION=$(grep version pubspec.yaml | awk '{print $2}')
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          VERSION=$(sed -n 's/^version:[[:space:]]*//p' pubspec.yaml | head -n 1)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
   windows:
     needs: prepare
     runs-on: windows-latest
