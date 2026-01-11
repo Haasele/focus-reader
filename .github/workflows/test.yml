@@ -51,7 +51,8 @@ jobs:
       - name: Show Key
         run: |
           echo "Show config"
-          cat key.properties
+          cat android/key.properties
+          cat android/app/release.jks
           echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}"
           echo "${{ secrets.ANDROID_KEY_ALIAS }}"
           sleep 15
