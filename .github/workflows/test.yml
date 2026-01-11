@@ -18,7 +18,8 @@ jobs:
   android_web:
     name: Android
     runs-on: macos-26
-
+    environment: ANDROID_KEYSTORE_BASE64   # <-- so wird das Environment aktiviert
+    
     steps:
       - uses: actions/checkout@v4
 
@@ -38,24 +39,11 @@ jobs:
       #   run: flutter pub get
         
 
-      - name: Decode keystore from env
-        env:
-          KS_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+    steps:
+      - uses: actions/checkout@v4
+      ...
+      - name: Decode keystore
         run: |
           mkdir -p android/app
-          echo -n "$KS_BASE64" | base64 -D > android/app/release.jks
+          printf "%s" "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -D > android/app/release.jks
           ls -lh android/app/release.jks
-
-      
-      - name: Create key.properties
-        run: |
-          echo "storePassword=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}" > android/key.properties
-          echo "keyPassword=${{ secrets.ANDROID_KEY_PASSWORD }}" >> android/key.properties
-          echo "keyAlias=${{ secrets.ANDROID_KEY_ALIAS }}" >> android/key.properties
-          echo "storeFile=app/release.jks" >> android/key.properties
-      
-      - name: Check keystore
-        run: ls -lh android/app/ && sleep 5
-
-      - name: Build Android APK
-        run: flutter build apk
