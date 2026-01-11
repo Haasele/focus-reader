@@ -12,7 +12,7 @@ concurrency:
 
 env:
   FLUTTER_CHANNEL: stable
-  JAVA_VERSION: '17'
+  JAVA_VERSION: '11'
 
 jobs:
   android_web:
@@ -42,7 +42,7 @@ jobs:
         
       - name: Decode keystore
         run: |
-          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | tr -d '\r\n' | base64 --decode > android/app/release.jks
+          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | tr -d '\r\n' | base64 --decode > /home/runner/work/focus-reader/focus-reader/android/app/release.jks
 
       - name: Create key.properties
         run: |
