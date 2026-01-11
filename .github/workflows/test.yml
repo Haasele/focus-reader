@@ -40,7 +40,11 @@ jobs:
       - name: Decode keystore
         run: |
           mkdir -p android/app
-          printf "%s" "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -D > android/app/release.jks
+          cat <<EOF | base64 -D > android/app/release.jks
+          ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          EOF
+          ls -lh android/app/release.jks
+
       
       - name: Create key.properties
         run: |
