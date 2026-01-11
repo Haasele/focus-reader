@@ -38,10 +38,6 @@ jobs:
       # - name: Install dependencies
       #   run: flutter pub get
         
-
-    steps:
-      - uses: actions/checkout@v4
-      ...
       - name: Decode keystore
         run: |
           mkdir -p android/app
