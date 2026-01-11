@@ -1,7 +1,6 @@
 name: Artifact Packaging
 
 on:
-  workflow_dispatch:
   workflow_run:
     workflows:
       - Flutter Multi-Platform CI (Stable)
