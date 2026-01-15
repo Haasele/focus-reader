@@ -308,11 +308,8 @@ jobs:
           $buildDir = "build\windows\x64\runner\Release"
           $appName = "FocusReader"
           
-          # Find WiX Toolset installation path
-          # Search in common installation locations
           $possiblePaths = @()
           
-          # Check Program Files (x86) and Program Files
           foreach ($pf in @("${env:ProgramFiles(x86)}", $env:ProgramFiles)) {
             if ($pf) {
               $wixDirs = Get-ChildItem "$pf" -Filter "WiX Toolset*" -Directory -ErrorAction SilentlyContinue
@@ -325,12 +322,10 @@ jobs:
             }
           }
           
-          # Also check if it's in PATH
           try {
             $heatCmd = Get-Command heat.exe -ErrorAction Stop
             $possiblePaths += Split-Path $heatCmd.Source
           } catch {
-            # Not in PATH, continue searching
           }
           
           if ($possiblePaths.Count -eq 0) {
@@ -340,28 +335,19 @@ jobs:
           $wixPath = $possiblePaths[0]
           Write-Host "Using WiX Toolset from: $wixPath"
           
-          # Add WiX to PATH for this session
           $env:PATH = "$wixPath;$env:PATH"
           
           # Use heat.exe to harvest all files from the build directory
-          # Generate as fragments that can be included
+          # Generate as fragments
           & heat.exe dir "$buildDir" -out files.wxs -gg -g1 -sfrag -srd -scom -sreg -dr INSTALLFOLDER -cg ApplicationFiles -var var.SourceDir
           
-          # Convert the generated Wix file to an Include file
-          # Read the content and wrap it in Include tags
-          $filesContent = Get-Content files.wxs -Raw
-          # Replace <Wix> with <Include> and remove closing </Wix>
-          $filesContent = $filesContent -replace '<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">', '<Include>'
-          $filesContent = $filesContent -replace '</Wix>', '</Include>'
-          # Replace SourceDir variable with actual path
-          $filesContent = $filesContent -replace 'Source="SourceDir', "Source=`"$buildDir"
+          $filesContent = Get-Content files.wxs -Raw -Encoding UTF8
+          $filesContent = $filesContent -replace 'Source="\$(var.SourceDir)', "Source=`"$buildDir"
           $filesContent | Out-File -FilePath files.wxs -Encoding UTF8 -NoNewline
           
-          # Create main installer file
           $wxsLines = @(
             "<?xml version='1.0' encoding='utf-8'?>",
             "<Wix xmlns='http://schemas.microsoft.com/wix/2006/wi'>",
-            "  <?include files.wxs ?>",
             "  <Product Id='*' Name='$appName' Language='1033' Version='$version' Manufacturer='Focus Reader' UpgradeCode='{B8B8B8B8-B8B8-B8B8-B8B8-B8B8B8B8B8B8}'>",
             "    <Package InstallerVersion='200' Compressed='yes' InstallScope='perMachine' />",
             "    <MajorUpgrade DowngradeErrorMessage='A newer version of [ProductName] is already installed.' />",
@@ -389,9 +375,8 @@ jobs:
           )
           $wxsLines | Out-File -FilePath installer.wxs -Encoding UTF8
           
-          # Compile and link
-          & candle.exe installer.wxs -dSourceDir="$buildDir"
-          & light.exe installer.wixobj -o "$appName-$version.msi" -ext WixUIExtension
+          & candle.exe installer.wxs files.wxs -dSourceDir="$buildDir"
+          & light.exe installer.wixobj files.wixobj -o "$appName-$version.msi" -ext WixUIExtension
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
