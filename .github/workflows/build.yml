@@ -366,7 +366,7 @@ jobs:
             "    </Directory>",
             "    <SetDirectory Id='INSTALLFOLDER' Value='[ProgramFilesFolder]$appName' />",
             "    <Component Id='ApplicationShortcut' Directory='ApplicationProgramsFolder' Guid='{A2A2A2A2-A2A2-A2A2-A2A2-A2A2A2A2A2A2}'>",
-            "      <Shortcut Id='ApplicationStartMenuShortcut' Name='$appName' Description='Focus Reader - RSVP based eBook and PDF Reader' Target='[INSTALLFOLDER]runner.exe' WorkingDirectory='INSTALLFOLDER' />",
+            "      <Shortcut Id='ApplicationStartMenuShortcut' Name='$appName' Description='Focus Reader - RSVP based eBook and PDF Reader' Target='[INSTALLFOLDER]focus_reader.exe' WorkingDirectory='INSTALLFOLDER' />",
             "      <RemoveFolder Id='ApplicationProgramsFolder' On='uninstall' />",
             "      <RegistryValue Root='HKCU' Key='Software\$appName' Type='string' Value='' KeyPath='yes' />",
             "    </Component>",
