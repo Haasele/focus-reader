@@ -105,7 +105,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             clang cmake ninja-build pkg-config \
-            libgtk-3-dev liblzma-dev
+            libgtk-3-dev liblzma-dev \
+            fakeroot dpkg-dev \
+            ruby ruby-dev build-essential \
+            wget file
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
@@ -119,14 +122,132 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
+      - name: Extract version
+        id: version
+        run: |
+          RAW=$(sed -n 's/^version:[[:space:]]*//p' pubspec.yaml | head -n 1)
+          VERSION=${RAW%%+*}
+          BUILD=${RAW##*+}
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "build=$BUILD" >> "$GITHUB_OUTPUT"
+
       - name: Build Linux
         run: flutter build linux --release
 
-      - name: Upload Linux build
+      - name: Install fpm for RPM packaging
+        run: |
+          sudo gem install fpm
+
+      - name: Create DEB package
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          APP_NAME="focus-reader"
+          BUILD_DIR="build/linux/x64/release/bundle"
+          
+          # Create DEB package structure
+          mkdir -p deb-pkg/DEBIAN
+          mkdir -p deb-pkg/usr/bin
+          mkdir -p deb-pkg/usr/share/applications
+          mkdir -p deb-pkg/usr/share/pixmaps
+          mkdir -p deb-pkg/opt/$APP_NAME
+          
+          # Copy application files
+          cp -r $BUILD_DIR/* deb-pkg/opt/$APP_NAME/
+          
+          # Create desktop entry
+          echo "[Desktop Entry]" > deb-pkg/usr/share/applications/$APP_NAME.desktop
+          echo "Version=1.0" >> deb-pkg/usr/share/applications/$APP_NAME.desktop
+          echo "Type=Application" >> deb-pkg/usr/share/applications/$APP_NAME.desktop
+          echo "Name=Focus Reader" >> deb-pkg/usr/share/applications/$APP_NAME.desktop
+          echo "Comment=RSVP based eBook and PDF Reader" >> deb-pkg/usr/share/applications/$APP_NAME.desktop
+          echo "Exec=/opt/$APP_NAME/focus_reader" >> deb-pkg/usr/share/applications/$APP_NAME.desktop
+          echo "Icon=/opt/$APP_NAME/data/flutter_assets/assets/reader-icon.png" >> deb-pkg/usr/share/applications/$APP_NAME.desktop
+          echo "Terminal=false" >> deb-pkg/usr/share/applications/$APP_NAME.desktop
+          echo "Categories=Office;Viewer;" >> deb-pkg/usr/share/applications/$APP_NAME.desktop
+          
+          # Create symlink for easy access
+          ln -s /opt/$APP_NAME/focus_reader deb-pkg/usr/bin/focus-reader
+          
+          # Create control file
+          echo "Package: $APP_NAME" > deb-pkg/DEBIAN/control
+          echo "Version: $VERSION" >> deb-pkg/DEBIAN/control
+          echo "Architecture: amd64" >> deb-pkg/DEBIAN/control
+          echo "Maintainer: Focus Reader Team" >> deb-pkg/DEBIAN/control
+          echo "Description: Focus Reader - RSVP based eBook and PDF Reader" >> deb-pkg/DEBIAN/control
+          echo " A modern eBook and PDF reader with RSVP (Rapid Serial Visual Presentation) functionality." >> deb-pkg/DEBIAN/control
+          
+          # Build DEB package
+          dpkg-deb --build deb-pkg ${APP_NAME}_${VERSION}_amd64.deb
+
+      - name: Create RPM package
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          APP_NAME="focus-reader"
+          BUILD_DIR="build/linux/x64/release/bundle"
+          
+          # Create RPM using fpm
+          fpm -s dir \
+            -t rpm \
+            -n $APP_NAME \
+            -v $VERSION \
+            -a x86_64 \
+            --description "Focus Reader - RSVP based eBook and PDF Reader" \
+            --prefix /opt/$APP_NAME \
+            $BUILD_DIR
+
+      - name: Create AppImage
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          APP_NAME="FocusReader"
+          BUILD_DIR="build/linux/x64/release/bundle"
+          
+          # Download appimagetool
+          wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage -O appimagetool.AppImage
+          chmod +x appimagetool.AppImage
+          
+          # Create AppDir structure
+          mkdir -p AppDir/usr/bin
+          mkdir -p AppDir/usr/share/applications
+          mkdir -p AppDir/usr/share/icons/hicolor/256x256/apps
+          
+          # Copy application files to AppDir/usr/bin
+          cp -r $BUILD_DIR/* AppDir/usr/bin/
+          
+          # Create desktop entry
+          echo "[Desktop Entry]" > AppDir/usr/share/applications/focus-reader.desktop
+          echo "Version=1.0" >> AppDir/usr/share/applications/focus-reader.desktop
+          echo "Type=Application" >> AppDir/usr/share/applications/focus-reader.desktop
+          echo "Name=Focus Reader" >> AppDir/usr/share/applications/focus-reader.desktop
+          echo "Comment=RSVP based eBook and PDF Reader" >> AppDir/usr/share/applications/focus-reader.desktop
+          echo "Exec=usr/bin/focus_reader" >> AppDir/usr/share/applications/focus-reader.desktop
+          echo "Icon=focus-reader" >> AppDir/usr/share/applications/focus-reader.desktop
+          echo "Terminal=false" >> AppDir/usr/share/applications/focus-reader.desktop
+          echo "Categories=Office;Viewer;" >> AppDir/usr/share/applications/focus-reader.desktop
+          
+          # Copy icon if available
+          if [ -f "reader-icon.png" ]; then
+            cp reader-icon.png AppDir/usr/share/icons/hicolor/256x256/apps/focus-reader.png
+            cp reader-icon.png AppDir/focus-reader.png
+          fi
+          
+          # Create AppRun script
+          echo '#!/bin/bash' > AppDir/AppRun
+          echo 'HERE="$(dirname "$(readlink -f "${0}")")"' >> AppDir/AppRun
+          echo 'exec "${HERE}/usr/bin/focus_reader" "$@"' >> AppDir/AppRun
+          chmod +x AppDir/AppRun
+          
+          # Build AppImage
+          ARCH=x86_64 ./appimagetool.AppImage AppDir ${APP_NAME}-${VERSION}-x86_64.AppImage
+
+      - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: linux-build
-          path: build/linux/x64/release/bundle
+          name: linux-release
+          path: |
+            build/linux/x64/release/bundle
+            focus-reader_*.deb
+            focus-reader-*.rpm
+            FocusReader-*.AppImage
 
   windows:
     name: Windows Desktop
@@ -147,14 +268,78 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
+      - name: Extract version
+        id: version
+        run: |
+          $raw = (Select-String -Path pubspec.yaml -Pattern '^version:' | Select-Object -First 1).Line
+          $version = ($raw -replace 'version:\s*', '').Split('+')[0]
+          $build = ($raw -replace 'version:\s*', '').Split('+')[1]
+          echo "version=$version" >> $env:GITHUB_OUTPUT
+          echo "build=$build" >> $env:GITHUB_OUTPUT
+
       - name: Build Windows
         run: flutter build windows --release
 
-      - name: Upload Windows build
+      - name: Install WiX Toolset
+        run: |
+          choco install wixtoolset -y
+
+      - name: Create MSI Installer
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          $buildDir = "build\windows\x64\runner\Release"
+          $appName = "FocusReader"
+          $wixPath = "C:\Program Files (x86)\WiX Toolset v3.11\bin"
+          
+          # Use heat.exe to harvest all files from the build directory
+          & "$wixPath\heat.exe" dir "$buildDir" -out files.wxs -gg -g1 -sfrag -srd -scom -sreg -dr INSTALLFOLDER -cg ApplicationFiles -var var.SourceDir
+          
+          # Create main installer file
+          $wxsLines = @(
+            "<?xml version='1.0' encoding='utf-8'?>",
+            "<Wix xmlns='http://schemas.microsoft.com/wix/2006/wi'>",
+            "  <?include files.wxs ?>",
+            "  <Product Id='*' Name='$appName' Language='1033' Version='$version' Manufacturer='Focus Reader' UpgradeCode='{B8B8B8B8-B8B8-B8B8-B8B8-B8B8B8B8B8B8}'>",
+            "    <Package InstallerVersion='200' Compressed='yes' InstallScope='perMachine' />",
+            "    <MajorUpgrade DowngradeErrorMessage='A newer version of [ProductName] is already installed.' />",
+            "    <MediaTemplate />",
+            "    <Feature Id='ProductFeature' Title='$appName' Level='1'>",
+            "      <ComponentGroupRef Id='ApplicationFiles' />",
+            "      <ComponentRef Id='ApplicationShortcut' />",
+            "    </Feature>",
+            "    <Directory Id='TARGETDIR' Name='SourceDir'>",
+            "      <Directory Id='ProgramFilesFolder'>",
+            "        <Directory Id='INSTALLFOLDER' Name='$appName' />",
+            "      </Directory>",
+            "      <Directory Id='ProgramMenuFolder'>",
+            "        <Directory Id='ApplicationProgramsFolder' Name='$appName' />",
+            "      </Directory>",
+            "    </Directory>",
+            "    <SetDirectory Id='INSTALLFOLDER' Value='[ProgramFilesFolder]$appName' />",
+            "    <Component Id='ApplicationShortcut' Directory='ApplicationProgramsFolder' Guid='{A2A2A2A2-A2A2-A2A2-A2A2-A2A2A2A2A2A2}'>",
+            "      <Shortcut Id='ApplicationStartMenuShortcut' Name='$appName' Description='Focus Reader - RSVP based eBook and PDF Reader' Target='[INSTALLFOLDER]runner.exe' WorkingDirectory='INSTALLFOLDER' />",
+            "      <RemoveFolder Id='ApplicationProgramsFolder' On='uninstall' />",
+            "      <RegistryValue Root='HKCU' Key='Software\$appName' Type='string' Value='' KeyPath='yes' />",
+            "    </Component>",
+            "  </Product>",
+            "</Wix>"
+          )
+          $wxsLines | Out-File -FilePath installer.wxs -Encoding UTF8
+          
+          # Replace SourceDir variable in files.wxs
+          (Get-Content files.wxs) -replace 'Source="SourceDir', "Source=`"$buildDir" | Set-Content files.wxs
+          
+          # Compile and link
+          & "$wixPath\candle.exe" installer.wxs files.wxs -dSourceDir="$buildDir"
+          & "$wixPath\light.exe" installer.wixobj files.wixobj -o "$appName-$version.msi" -ext WixUIExtension
+
+      - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: windows-build
-          path: build/windows/x64/runner/Release
+          name: windows-release
+          path: |
+            build/windows/x64/runner/Release
+            FocusReader-*.msi
 
   macos_ios:
     name: macOS + iOS
@@ -175,14 +360,60 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
+      - name: Extract version
+        id: version
+        run: |
+          RAW=$(sed -n 's/^version:[[:space:]]*//p' pubspec.yaml | head -n 1)
+          VERSION=${RAW%%+*}
+          BUILD=${RAW##*+}
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "build=$BUILD" >> "$GITHUB_OUTPUT"
+
       - name: Build macOS
         run: flutter build macos --release
 
-      - name: Upload macOS build
+      - name: Create PKG Installer
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          APP_NAME="Focus Reader"
+          BUNDLE_ID="com.example.focusReader"
+          APP_PATH="build/macos/Build/Products/Release/focus_reader.app"
+          PKG_NAME="FocusReader-${VERSION}.pkg"
+          
+          # Create a temporary directory for the package
+          mkdir -p pkg-root/Applications
+          cp -R "$APP_PATH" pkg-root/Applications/
+          
+          # Create component plist file
+          echo '<?xml version="1.0" encoding="UTF-8"?>' > component.plist
+          echo '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' >> component.plist
+          echo '<plist version="1.0">' >> component.plist
+          echo '<array>' >> component.plist
+          echo '  <dict>' >> component.plist
+          echo '    <key>BundleHasStrictIdentifier</key>' >> component.plist
+          echo '    <true/>' >> component.plist
+          echo '    <key>RootRelativeBundlePath</key>' >> component.plist
+          echo '    <string>Applications/focus_reader.app</string>' >> component.plist
+          echo '  </dict>' >> component.plist
+          echo '</array>' >> component.plist
+          echo '</plist>' >> component.plist
+          
+          # Create the package
+          pkgbuild \
+            --root pkg-root \
+            --identifier "$BUNDLE_ID" \
+            --version "$VERSION" \
+            --install-location "/" \
+            --component-plist component.plist \
+            "$PKG_NAME"
+
+      - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: macos-build
-          path: build/macos/Build/Products/Release
+          name: macos-release
+          path: |
+            build/macos/Build/Products/Release
+            FocusReader-*.pkg
 
       - name: Build iOS (no codesign)
         run: flutter build ios --release --no-codesign
