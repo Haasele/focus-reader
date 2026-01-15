@@ -213,22 +213,39 @@ jobs:
           # Copy application files to AppDir/usr/bin
           cp -r $BUILD_DIR/* AppDir/usr/bin/
           
-          # Create desktop entry
-          echo "[Desktop Entry]" > AppDir/usr/share/applications/focus-reader.desktop
-          echo "Version=1.0" >> AppDir/usr/share/applications/focus-reader.desktop
-          echo "Type=Application" >> AppDir/usr/share/applications/focus-reader.desktop
-          echo "Name=Focus Reader" >> AppDir/usr/share/applications/focus-reader.desktop
-          echo "Comment=RSVP based eBook and PDF Reader" >> AppDir/usr/share/applications/focus-reader.desktop
-          echo "Exec=usr/bin/focus_reader" >> AppDir/usr/share/applications/focus-reader.desktop
-          echo "Icon=focus-reader" >> AppDir/usr/share/applications/focus-reader.desktop
-          echo "Terminal=false" >> AppDir/usr/share/applications/focus-reader.desktop
-          echo "Categories=Office;Viewer;" >> AppDir/usr/share/applications/focus-reader.desktop
-          
-          # Copy icon if available
+          # Copy icon to multiple locations
           if [ -f "reader-icon.png" ]; then
-            cp reader-icon.png AppDir/usr/share/icons/hicolor/256x256/apps/focus-reader.png
+            # Root level icon (required by AppImage)
             cp reader-icon.png AppDir/focus-reader.png
+            # Icon in standard location
+            cp reader-icon.png AppDir/usr/share/icons/hicolor/256x256/apps/focus-reader.png
+            # Also create 128x128 and 64x64 for better compatibility
+            mkdir -p AppDir/usr/share/icons/hicolor/128x128/apps
+            mkdir -p AppDir/usr/share/icons/hicolor/64x64/apps
+            cp reader-icon.png AppDir/usr/share/icons/hicolor/128x128/apps/focus-reader.png
+            cp reader-icon.png AppDir/usr/share/icons/hicolor/64x64/apps/focus-reader.png
+          else
+            echo "Warning: reader-icon.png not found, creating placeholder"
+            # Create a simple placeholder if icon is missing
+            convert -size 256x256 xc:transparent AppDir/focus-reader.png 2>/dev/null || \
+            echo "Note: ImageMagick not available, skipping placeholder icon"
           fi
+          
+          # Create desktop entry at root level (REQUIRED by appimagetool)
+          # The desktop file MUST be at AppDir root with name matching the icon
+          echo "[Desktop Entry]" > AppDir/focus-reader.desktop
+          echo "Version=1.0" >> AppDir/focus-reader.desktop
+          echo "Type=Application" >> AppDir/focus-reader.desktop
+          echo "Name=Focus Reader" >> AppDir/focus-reader.desktop
+          echo "Comment=RSVP based eBook and PDF Reader" >> AppDir/focus-reader.desktop
+          echo "Exec=usr/bin/focus_reader" >> AppDir/focus-reader.desktop
+          echo "Icon=focus-reader" >> AppDir/focus-reader.desktop
+          echo "Terminal=false" >> AppDir/focus-reader.desktop
+          echo "Categories=Office;Viewer;" >> AppDir/focus-reader.desktop
+          echo "StartupNotify=true" >> AppDir/focus-reader.desktop
+          
+          # Also create desktop entry in standard location
+          cp AppDir/focus-reader.desktop AppDir/usr/share/applications/focus-reader.desktop
           
           # Create AppRun script
           echo '#!/bin/bash' > AppDir/AppRun
